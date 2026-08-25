@@ -1,0 +1,69 @@
+{% extends 'Blessing\\HAuth::auth.base' %}
+
+{% block title %}{{ trans('Blessing\\HAuth::auth.mfa.title') }}{% endblock %}
+
+{% block content %}
+  <p class="login-box-msg">{{ trans('Blessing\\HAuth::auth.mfa.message') }}</p>
+
+  <div class="alert alert-info">
+    <i class="icon fas fa-mobile-alt mr-1"></i>
+    {{ trans('Blessing\\HAuth::auth.mfa.destination', {phone: destination}) }}
+  </div>
+
+  {% if errors.any %}
+    <div class="alert alert-warning">
+      <i class="icon fas fa-exclamation-triangle mr-1"></i>
+      {{ errors.first }}
+    </div>
+  {% endif %}
+
+  {% if msg|length > 0 %}
+    <div class="alert alert-warning">
+      <i class="icon fas fa-exclamation-triangle mr-1"></i>
+      {{ msg }}
+    </div>
+  {% endif %}
+
+  <form method="post" action="{{ url('/auth/mfa/henan/' ~ token ~ '/send') }}">
+    {{ csrf_field() }}
+    <button type="submit" class="btn btn-outline-primary btn-block mb-3">
+      {{ trans(sent ? 'Blessing\\HAuth::auth.mfa.resend' : 'Blessing\\HAuth::auth.mfa.send') }}
+    </button>
+  </form>
+
+  <form method="post" action="{{ url('/auth/mfa/henan/' ~ token ~ '/verify') }}">
+    {{ csrf_field() }}
+
+    <div class="input-group mb-3">
+      <input
+        name="code"
+        type="text"
+        class="form-control"
+        placeholder="{{ trans('Blessing\\HAuth::auth.mfa.code') }}"
+        autocomplete="one-time-code"
+        inputmode="numeric"
+        pattern="[0-9]{4,8}"
+        minlength="4"
+        maxlength="8"
+        required
+        autofocus
+      >
+      <div class="input-group-append">
+        <div class="input-group-text">
+          <span class="fas fa-shield-alt"></span>
+        </div>
+      </div>
+    </div>
+
+    <button type="submit" class="btn btn-primary btn-block">
+      {{ trans('Blessing\\HAuth::auth.mfa.verify') }}
+    </button>
+  </form>
+
+  <form method="post" action="{{ url('/auth/mfa/henan/' ~ token ~ '/cancel') }}">
+    {{ csrf_field() }}
+    <button type="submit" class="btn btn-link btn-block mt-2">
+      {{ trans('Blessing\\HAuth::auth.mfa.cancel') }}
+    </button>
+  </form>
+{% endblock %}

@@ -3,8 +3,8 @@
 namespace Blessing\HAuth;
 
 use Blessing\HAuth\Schools\NcwuAuth;
-use Blessing\HAuth\Schools\SchoolAuth;
 use Blessing\HAuth\Schools\ZzuAuth;
+use Blessing\HAuth\Utils\SchoolAuth;
 
 class SchoolRegistry
 {
@@ -23,6 +23,11 @@ class SchoolRegistry
 
     public static function login(string $school, string $username, string $password): bool
     {
+        return self::make($school)->login($username, $password);
+    }
+
+    public static function make(string $school): SchoolAuth
+    {
         $class = self::SCHOOLS[$school]['auth'] ?? null;
         if ($class === null) {
             throw new \InvalidArgumentException("暂不支持该学校：{$school}");
@@ -33,7 +38,7 @@ class SchoolRegistry
             throw new \LogicException("学校认证类必须实现 SchoolAuth：{$class}");
         }
 
-        return $auth->login($username, $password);
+        return $auth;
     }
 
     public static function names(): array

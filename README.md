@@ -35,11 +35,17 @@
 
 ```text
 src/
-├── SchoolRegistry.php       # 学校注册表与 Provider 调度
-└── Schools/
-    ├── SchoolAuth.php       # 学校认证统一接口
-    ├── NcwuAuth.php         # 华水 Provider
-    └── ZzuAuth.php          # 郑大 Provider
+├── SchoolRegistry.php            # 学校注册表与 Provider 调度
+├── Schools/                      # 各学校 Provider
+│   ├── NcwuAuth.php              # 华水 Provider
+│   └── ZzuAuth.php               # 郑大 Provider
+└── Utils/                        # Provider 共用接口与工具
+    ├── SchoolAuth.php            # 学校认证统一接口
+    ├── MfaCapableSchoolAuth.php  # 多因素认证 Provider 接口
+    ├── MfaRequiredException.php  # 多因素认证挑战信息
+    ├── JSEncrypt.php
+    ├── KingoDes.php
+    └── RSAUtils.php
 ```
 
 ## 贡献者

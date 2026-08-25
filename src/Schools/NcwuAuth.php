@@ -2,6 +2,7 @@
 
 namespace Blessing\HAuth\Schools;
 
+use Blessing\HAuth\Utils\SchoolAuth;
 use Blessing\HAuth\Utils\KingoDes;
 use GuzzleHttp\Cookie\CookieJar;
 use Illuminate\Support\Facades\Http;

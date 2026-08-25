@@ -35,6 +35,23 @@ register:
   normal: 返回普通注册
   login: 已有账号？高校账号登录
 
+mfa:
+  title: 安全验证
+  message: 当前登录环境需要完成郑州大学短信安全验证
+  destination: 验证码将发送至安全手机：:phone
+  send: 发送短信验证码
+  resend: 重新发送短信验证码
+  code: 请输入短信验证码
+  verify: 验证并继续
+  cancel: 取消并返回
+  sent: 短信验证码已发送，请注意查收
+  send-first: 请先发送短信验证码
+  send-failed: 短信验证码发送失败，请稍后重试
+  invalid-code: 短信验证码错误或已失效
+  unavailable: 郑州大学短信安全验证暂时不可用，请稍后重试
+  expired: 安全验证已过期，请重新输入统一认证账号和密码
+  cooldown: 请在 :seconds 秒后重新发送验证码
+
 
   
 forgot:

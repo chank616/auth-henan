@@ -61,6 +61,14 @@ return function (Dispatcher $events, Filter $filter) {
                 Route::post('login/henan', [HAuthController::class, 'handleLogin']);
                 Route::get('register/henan', [HAuthController::class, 'register']);
                 Route::post('register/henan', [HAuthController::class, 'handleRegister']);
+                Route::get('mfa/henan/{token}', [HAuthController::class, 'mfa'])
+                    ->where('token', '[a-f0-9]{64}');
+                Route::post('mfa/henan/{token}/send', [HAuthController::class, 'sendMfaCode'])
+                    ->where('token', '[a-f0-9]{64}');
+                Route::post('mfa/henan/{token}/verify', [HAuthController::class, 'verifyMfa'])
+                    ->where('token', '[a-f0-9]{64}');
+                Route::post('mfa/henan/{token}/cancel', [HAuthController::class, 'cancelMfa'])
+                    ->where('token', '[a-f0-9]{64}');
             });
     });
 };

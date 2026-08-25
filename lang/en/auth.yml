@@ -25,6 +25,23 @@ register:
   normal: Return to regular registration
   login: Already registered? Sign in
 
+mfa:
+  title: Security verification
+  message: Zhengzhou University requires SMS verification for this sign-in
+  destination: 'The verification code will be sent to: :phone'
+  send: Send verification code
+  resend: Resend verification code
+  code: Enter the SMS verification code
+  verify: Verify and continue
+  cancel: Cancel and return
+  sent: The SMS verification code has been sent
+  send-first: Send a verification code first
+  send-failed: Failed to send the SMS verification code. Try again later.
+  invalid-code: The SMS verification code is incorrect or expired
+  unavailable: Zhengzhou University SMS verification is temporarily unavailable
+  expired: Security verification expired. Enter your university account and password again.
+  cooldown: Wait :seconds seconds before requesting another code
+
 validation:
   credentials: University authentication failed. Check your account and password.
   unavailable: The university authentication service is temporarily unavailable. Try again later.

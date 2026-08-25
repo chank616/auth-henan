@@ -8,6 +8,8 @@ use App\Models\User;
 use App\Rules;
 use Auth;
 use Blessing\Filter;
+use Blessing\HAuth\Utils\MfaCapableSchoolAuth;
+use Blessing\HAuth\Utils\MfaRequiredException;
 use Blessing\Rejection;
 use Carbon\Carbon;
 use Illuminate\Contracts\Events\Dispatcher;
@@ -16,6 +18,10 @@ use Vectorface\Whip\Whip;
 
 class HAuthController
 {
+    private const MFA_SESSION_PREFIX = 'henan_auth.mfa.';
+    private const MFA_LIFETIME = 300;
+    private const MFA_RESEND_INTERVAL = 60;
+
     public function login(Filter $filter, string $msg = '', array $userData = [])
     {
         return view('Blessing\HAuth::auth.login', [
@@ -47,6 +53,128 @@ class HAuthController
         ]);
     }
 
+    public function mfa(Request $request, string $token)
+    {
+        $pending = $this->pendingMfa($request, $token);
+        if ($pending === null) {
+            return redirect(url('/auth/login/henan'))->with(
+                'msg',
+                trans('Blessing\HAuth::auth.mfa.expired')
+            );
+        }
+
+        return view('Blessing\HAuth::auth.mfa', [
+            'token' => $token,
+            'destination' => $pending['destination'],
+            'operation' => $pending['operation'],
+            'sent' => !empty($pending['sent_at']),
+            'msg' => (string) $request->session()->pull('henan_mfa_message', ''),
+        ]);
+    }
+
+    public function sendMfaCode(Request $request, string $token)
+    {
+        $pending = $this->pendingMfa($request, $token);
+        if ($pending === null) {
+            return $this->expiredMfaRedirect();
+        }
+
+        $remaining = self::MFA_RESEND_INTERVAL - (time() - (int) $pending['sent_at']);
+        if ($remaining > 0) {
+            return $this->mfaRedirect(
+                $token,
+                trans('Blessing\HAuth::auth.mfa.cooldown', ['seconds' => $remaining])
+            );
+        }
+
+        $auth = SchoolRegistry::make($pending['school']);
+        if (!$auth instanceof MfaCapableSchoolAuth) {
+            return $this->mfaRedirect(
+                $token,
+                trans('Blessing\HAuth::auth.mfa.unavailable')
+            );
+        }
+
+        try {
+            $pending['challenge'] = $auth->sendMfaCode($pending['challenge']);
+        } catch (\Throwable $exception) {
+            return $this->mfaRedirect(
+                $token,
+                trans('Blessing\HAuth::auth.mfa.send-failed')
+            );
+        }
+
+        $pending['sent_at'] = time();
+        $request->session()->put($this->mfaSessionKey($token), $pending);
+
+        return $this->mfaRedirect($token, trans('Blessing\HAuth::auth.mfa.sent'));
+    }
+
+    public function verifyMfa(
+        Request $request,
+        Dispatcher $dispatcher,
+        Filter $filter,
+        string $token
+    ) {
+        $data = $request->validate([
+            'code' => 'required|string|regex:/^[0-9]{4,8}$/',
+        ]);
+        $pending = $this->pendingMfa($request, $token);
+        if ($pending === null) {
+            return $this->expiredMfaRedirect();
+        }
+        if (empty($pending['sent_at'])) {
+            return $this->mfaRedirect($token, trans('Blessing\HAuth::auth.mfa.send-first'));
+        }
+
+        $auth = SchoolRegistry::make($pending['school']);
+        if (!$auth instanceof MfaCapableSchoolAuth) {
+            return $this->mfaRedirect(
+                $token,
+                trans('Blessing\HAuth::auth.mfa.unavailable')
+            );
+        }
+
+        try {
+            $context = $auth->verifyMfaCode($pending['challenge'], $data['code']);
+            if ($context === null) {
+                return $this->mfaRedirect($token, trans('Blessing\HAuth::auth.mfa.invalid-code'));
+            }
+
+            if (!$auth->completeMfaLogin($pending['identification'], $context)) {
+                $request->session()->forget($this->mfaSessionKey($token));
+
+                return $this->authenticationFailure(
+                    $filter,
+                    $pending,
+                    trans('Blessing\HAuth::auth.validation.credentials')
+                );
+            }
+        } catch (\Throwable $exception) {
+            return $this->mfaRedirect($token, trans('Blessing\HAuth::auth.mfa.unavailable'));
+        }
+
+        $request->session()->forget($this->mfaSessionKey($token));
+
+        if ($pending['operation'] === 'register') {
+            return $this->finishRegister($request, $dispatcher, $filter, $pending);
+        }
+
+        return $this->finishLogin($request, $dispatcher, $filter, $pending);
+    }
+
+    public function cancelMfa(Request $request, string $token)
+    {
+        $pending = $this->pendingMfa($request, $token);
+        $request->session()->forget($this->mfaSessionKey($token));
+
+        if ($pending !== null && $pending['operation'] === 'register') {
+            return redirect(url('/auth/register/henan'));
+        }
+
+        return redirect(url('/auth/login/henan'));
+    }
+
     public function handleLogin(
         Request $request,
         Dispatcher $dispatcher,
@@ -68,12 +196,7 @@ class HAuthController
         $dispatcher->dispatch('auth.login.attempt', [$email, $data['password'], 'email']);
         event(new Events\UserTryToLogin($email, 'email'));
 
-        if ($message = $this->authenticate($data['school'], $data['identification'], $data['password'])) {
-            return $this->login($filter, $message, $userData);
-        }
-
-        $user = User::where('email', $email)->first();
-        if (!$user) {
+        if (!User::where('email', $email)->exists()) {
             return $this->login(
                 $filter,
                 trans('Blessing\HAuth::auth.validation.unregistered'),
@@ -81,19 +204,34 @@ class HAuthController
             );
         }
 
-        $dispatcher->dispatch('auth.login.ready', [$user]);
-
-        if (!$user->verified) {
-            $user->verified = true;
-            $user->save();
+        try {
+            $authenticated = SchoolRegistry::login(
+                $data['school'],
+                $data['identification'],
+                $data['password']
+            );
+        } catch (MfaRequiredException $challenge) {
+            return $this->beginMfa($request, 'login', [
+                'school' => $data['school'],
+                'identification' => $data['identification'],
+            ], $challenge);
+        } catch (\Throwable $exception) {
+            return $this->login(
+                $filter,
+                trans('Blessing\HAuth::auth.validation.unavailable'),
+                $userData
+            );
         }
 
-        Auth::login($user);
+        if (!$authenticated) {
+            return $this->login(
+                $filter,
+                trans('Blessing\HAuth::auth.validation.credentials'),
+                $userData
+            );
+        }
 
-        $dispatcher->dispatch('auth.login.succeeded', [$user]);
-        event(new Events\UserLoggedIn($user));
-
-        return redirect($request->session()->pull('last_requested_path', url('/user')));
+        return $this->finishLogin($request, $dispatcher, $filter, $data);
     }
 
     public function handleRegister(
@@ -122,11 +260,84 @@ class HAuthController
         ]);
         $userData = $request->only(['school', 'identification', 'player_name']);
 
-        if ($message = $this->authenticate($data['school'], $data['identification'], $data['password'])) {
-            return $this->register($filter, $message, $userData);
+        try {
+            $authenticated = SchoolRegistry::login(
+                $data['school'],
+                $data['identification'],
+                $data['password']
+            );
+        } catch (MfaRequiredException $challenge) {
+            return $this->beginMfa($request, 'register', [
+                'school' => $data['school'],
+                'identification' => $data['identification'],
+                'player_name' => $data['player_name'],
+                'password_hash' => $this->hashLocalPassword($data['site_password'], $filter),
+            ], $challenge);
+        } catch (\Throwable $exception) {
+            return $this->register(
+                $filter,
+                trans('Blessing\HAuth::auth.validation.unavailable'),
+                $userData
+            );
         }
 
+        if (!$authenticated) {
+            return $this->register(
+                $filter,
+                trans('Blessing\HAuth::auth.validation.credentials'),
+                $userData
+            );
+        }
+
+        $data['password_hash'] = $this->hashLocalPassword($data['site_password'], $filter);
+
+        return $this->finishRegister($request, $dispatcher, $filter, $data);
+    }
+
+    private function finishLogin(
+        Request $request,
+        Dispatcher $dispatcher,
+        Filter $filter,
+        array $data
+    ) {
         $email = $data['identification'] . SchoolRegistry::emailDomain($data['school']);
+        $user = User::where('email', $email)->first();
+        if (!$user) {
+            return $this->login(
+                $filter,
+                trans('Blessing\HAuth::auth.validation.unregistered'),
+                $data
+            );
+        }
+
+        $dispatcher->dispatch('auth.login.ready', [$user]);
+
+        if (!$user->verified) {
+            $user->verified = true;
+            $user->save();
+        }
+
+        Auth::login($user);
+
+        $dispatcher->dispatch('auth.login.succeeded', [$user]);
+        event(new Events\UserLoggedIn($user));
+
+        return redirect($request->session()->pull('last_requested_path', url('/user')));
+    }
+
+    private function finishRegister(
+        Request $request,
+        Dispatcher $dispatcher,
+        Filter $filter,
+        array $data
+    ) {
+        $email = $data['identification'] . SchoolRegistry::emailDomain($data['school']);
+        $userData = [
+            'school' => $data['school'],
+            'identification' => $data['identification'],
+            'player_name' => $data['player_name'],
+        ];
+
         if (User::where('email', $email)->exists()) {
             return $this->register(
                 $filter,
@@ -162,7 +373,7 @@ class HAuthController
         $user->nickname = $data['player_name'];
         $user->score = option('user_initial_score');
         $user->avatar = 0;
-        $user->password = $this->hashLocalPassword($data['site_password'], $filter);
+        $user->password = $data['password_hash'];
         $user->ip = $ip;
         $user->permission = User::NORMAL;
         $user->verified = true;
@@ -192,17 +403,80 @@ class HAuthController
         return redirect(url('/user'));
     }
 
-    private function authenticate(string $school, string $identification, string $password): ?string
+    private function beginMfa(
+        Request $request,
+        string $operation,
+        array $data,
+        MfaRequiredException $challenge
+    ) {
+        $token = bin2hex(random_bytes(32));
+        $pending = array_merge($data, [
+            'operation' => $operation,
+            'destination' => $challenge->destination(),
+            'challenge' => $challenge->context(),
+            'expires_at' => time() + self::MFA_LIFETIME,
+            'sent_at' => 0,
+        ]);
+        $request->session()->put($this->mfaSessionKey($token), $pending);
+
+        return redirect(url('/auth/mfa/henan/' . $token));
+    }
+
+    private function pendingMfa(Request $request, string $token): ?array
     {
-        try {
-            if (!SchoolRegistry::login($school, $identification, $password)) {
-                return trans('Blessing\HAuth::auth.validation.credentials');
-            }
-        } catch (\Throwable $e) {
-            return trans('Blessing\HAuth::auth.validation.unavailable');
+        if (preg_match('/^[a-f0-9]{64}$/', $token) !== 1) {
+            return null;
         }
 
-        return null;
+        $key = $this->mfaSessionKey($token);
+        $pending = $request->session()->get($key);
+        if (!is_array($pending) || (int) ($pending['expires_at'] ?? 0) < time()) {
+            $request->session()->forget($key);
+
+            return null;
+        }
+
+        foreach (['operation', 'school', 'identification', 'destination', 'challenge'] as $field) {
+            if (!array_key_exists($field, $pending)) {
+                $request->session()->forget($key);
+
+                return null;
+            }
+        }
+
+        return $pending;
+    }
+
+    private function authenticationFailure(Filter $filter, array $pending, string $message)
+    {
+        $userData = [
+            'school' => $pending['school'],
+            'identification' => $pending['identification'],
+            'player_name' => $pending['player_name'] ?? '',
+        ];
+
+        if ($pending['operation'] === 'register') {
+            return $this->register($filter, $message, $userData);
+        }
+
+        return $this->login($filter, $message, $userData);
+    }
+
+    private function mfaRedirect(string $token, string $message)
+    {
+        return redirect(url('/auth/mfa/henan/' . $token))
+            ->with('henan_mfa_message', $message);
+    }
+
+    private function expiredMfaRedirect()
+    {
+        return redirect(url('/auth/login/henan'))
+            ->with('msg', trans('Blessing\HAuth::auth.mfa.expired'));
+    }
+
+    private function mfaSessionKey(string $token): string
+    {
+        return self::MFA_SESSION_PREFIX . $token;
     }
 
     private function hashLocalPassword(string $password, Filter $filter): string
